@@ -21,7 +21,7 @@
 #endif
 
 // The fmt library version in the form major * 10000 + minor * 100 + patch.
-#define FMT_VERSION 110201
+#define FMT_VERSION 110200
 
 // Detect compiler versions.
 #if defined(__clang__) && !defined(__ibmxl__)
@@ -467,7 +467,8 @@ template <typename T> constexpr const char* narrow(const T*) { return nullptr; }
 constexpr FMT_ALWAYS_INLINE const char* narrow(const char* s) { return s; }
 
 template <typename Char>
-FMT_CONSTEXPR auto compare(const Char* s1, const Char* s2, size_t n) -> int {
+FMT_CONSTEXPR auto compare(const Char* s1, const Char* s2, std::size_t n)
+    -> int {
   if (!is_constant_evaluated() && sizeof(Char) == 1) return memcmp(s1, s2, n);
   for (; n != 0; ++s1, ++s2, --n) {
     if (*s1 < *s2) return -1;
@@ -539,7 +540,7 @@ template <typename Char> class basic_string_view {
   FMT_CONSTEXPR20 basic_string_view(const Char* s) : data_(s) {
 #if FMT_HAS_BUILTIN(__builtin_strlen) || FMT_GCC_VERSION || FMT_CLANG_VERSION
     if (std::is_same<Char, char>::value && !detail::is_constant_evaluated()) {
-      size_ = __builtin_strlen(detail::narrow(s));  // strlen is not constexpr.
+      size_ = __builtin_strlen(detail::narrow(s));  // strlen is not costexpr.
       return;
     }
 #endif
@@ -1068,7 +1069,7 @@ template <typename Char> struct named_arg_info {
   int id;
 };
 
-// named_args is non-const to suppress a bogus -Wmaybe-uninitialized in gcc 13.
+// named_args is non-const to suppress a bogus -Wmaybe-uninitalized in gcc 13.
 template <typename Char>
 FMT_CONSTEXPR void check_for_duplicate(named_arg_info<Char>* named_args,
                                        int named_arg_index,
@@ -1678,12 +1679,12 @@ template <typename... T> struct arg_pack {};
 template <typename Char, int NUM_ARGS, int NUM_NAMED_ARGS, bool DYNAMIC_NAMES>
 class format_string_checker {
  private:
-  type types_[max_of<size_t>(1, NUM_ARGS)];
-  named_arg_info<Char> named_args_[max_of<size_t>(1, NUM_NAMED_ARGS)];
+  type types_[max_of(1, NUM_ARGS)];
+  named_arg_info<Char> named_args_[max_of(1, NUM_NAMED_ARGS)];
   compile_parse_context<Char> context_;
 
   using parse_func = auto (*)(parse_context<Char>&) -> const Char*;
-  parse_func parse_funcs_[max_of<size_t>(1, NUM_ARGS)];
+  parse_func parse_funcs_[max_of(1, NUM_ARGS)];
 
  public:
   template <typename... T>
@@ -2262,7 +2263,6 @@ template <typename Context> class value {
   }
 
   // Formats an argument of a custom type, such as a user-defined class.
-  // DEPRECATED! Formatter template parameter will be removed.
   template <typename T, typename Formatter>
   static void format_custom(void* arg, parse_context<char_type>& parse_ctx,
                             Context& ctx) {
@@ -2338,9 +2338,8 @@ template <typename Context, int NUM_ARGS, int NUM_NAMED_ARGS,
           unsigned long long DESC>
 struct named_arg_store {
   // args_[0].named_args points to named_args to avoid bloating format_args.
-  arg_t<Context, NUM_ARGS> args[1u + NUM_ARGS];
-  named_arg_info<typename Context::char_type>
-      named_args[static_cast<size_t>(NUM_NAMED_ARGS)];
+  arg_t<Context, NUM_ARGS> args[1 + NUM_ARGS];
+  named_arg_info<typename Context::char_type> named_args[NUM_NAMED_ARGS];
 
   template <typename... T>
   FMT_CONSTEXPR FMT_ALWAYS_INLINE named_arg_store(T&... values)
@@ -2373,7 +2372,7 @@ struct format_arg_store {
   // +1 to workaround a bug in gcc 7.5 that causes duplicated-branches warning.
   using type =
       conditional_t<NUM_NAMED_ARGS == 0,
-                    arg_t<Context, NUM_ARGS>[max_of<size_t>(1, NUM_ARGS)],
+                    arg_t<Context, NUM_ARGS>[max_of(1, NUM_ARGS)],
                     named_arg_store<Context, NUM_ARGS, NUM_NAMED_ARGS, DESC>>;
   type args;
 };

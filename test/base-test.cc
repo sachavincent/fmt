@@ -5,16 +5,14 @@
 //
 // For the license information refer to format.h.
 
-// Turn assertion failures into exceptions for testing.
 // clang-format off
 #include "test-assert.h"
 // clang-format on
 
 #include "fmt/base.h"
 
-#include <limits.h>  // INT_MAX
-#include <string.h>  // strlen
-
+#include <climits>      // INT_MAX
+#include <cstring>      // std::strlen
 #include <functional>   // std::equal_to
 #include <iterator>     // std::back_insert_iterator, std::distance
 #include <limits>       // std::numeric_limits
@@ -23,36 +21,39 @@
 
 #include "gmock/gmock.h"
 
-#ifdef FMT_FORMAT_H_
-#  error base-test includes format.h
-#endif
+using fmt::string_view;
+using fmt::detail::buffer;
 
 using testing::_;
 using testing::Invoke;
 using testing::Return;
 
-auto copy(fmt::string_view s, fmt::appender out) -> fmt::appender {
+#ifdef FMT_FORMAT_H_
+#  error core-test includes format.h
+#endif
+
+fmt::appender copy(fmt::string_view s, fmt::appender out) {
   for (char c : s) *out++ = c;
   return out;
 }
 
 TEST(string_view_test, value_type) {
-  static_assert(std::is_same<fmt::string_view::value_type, char>::value, "");
+  static_assert(std::is_same<string_view::value_type, char>::value, "");
 }
 
 TEST(string_view_test, ctor) {
-  EXPECT_STREQ(fmt::string_view("abc").data(), "abc");
-  EXPECT_EQ(fmt::string_view("abc").size(), 3u);
+  EXPECT_STREQ("abc", fmt::string_view("abc").data());
+  EXPECT_EQ(3u, fmt::string_view("abc").size());
 
-  EXPECT_STREQ(fmt::string_view(std::string("defg")).data(), "defg");
-  EXPECT_EQ(fmt::string_view(std::string("defg")).size(), 4u);
+  EXPECT_STREQ("defg", fmt::string_view(std::string("defg")).data());
+  EXPECT_EQ(4u, fmt::string_view(std::string("defg")).size());
 }
 
 TEST(string_view_test, length) {
   // Test that string_view::size() returns string length, not buffer size.
   char str[100] = "some string";
-  EXPECT_EQ(fmt::string_view(str).size(), strlen(str));
-  EXPECT_LT(strlen(str), sizeof(str));
+  EXPECT_EQ(std::strlen(str), string_view(str).size());
+  EXPECT_LT(std::strlen(str), sizeof(str));
 }
 
 // Check string_view's comparison operator.
@@ -61,16 +62,13 @@ template <template <typename> class Op> void check_op() {
   size_t num_inputs = sizeof(inputs) / sizeof(*inputs);
   for (size_t i = 0; i < num_inputs; ++i) {
     for (size_t j = 0; j < num_inputs; ++j) {
-      fmt::string_view lhs(inputs[i]), rhs(inputs[j]);
-      EXPECT_EQ(Op<int>()(lhs.compare(rhs), 0),
-                Op<fmt::string_view>()(lhs, rhs));
+      string_view lhs(inputs[i]), rhs(inputs[j]);
+      EXPECT_EQ(Op<int>()(lhs.compare(rhs), 0), Op<string_view>()(lhs, rhs));
     }
   }
 }
 
 TEST(string_view_test, compare) {
-  using fmt::string_view;
-
   EXPECT_EQ(string_view("foo").compare(string_view("foo")), 0);
   EXPECT_GT(string_view("fop").compare(string_view("foo")), 0);
   EXPECT_LT(string_view("foo").compare(string_view("fop")), 0);
@@ -95,165 +93,20 @@ TEST(string_view_test, compare) {
 }
 
 #if FMT_USE_CONSTEVAL
+template <size_t N> struct fixed_string {
+  char data[N] = {};
+
+  constexpr fixed_string(const char (&m)[N]) {
+    for (size_t i = 0; i != N; ++i) data[i] = m[i];
+  }
+};
+
 TEST(string_view_test, from_constexpr_fixed_string) {
-  constexpr int size = 4;
-
-  struct fixed_string {
-    char data[size] = {};
-
-    constexpr fixed_string(const char (&m)[size]) {
-      for (size_t i = 0; i != size; ++i) data[i] = m[i];
-    }
-  };
-
-  static constexpr auto fs = fixed_string("foo");
+  static constexpr auto fs = fixed_string<4>("foo");
   static constexpr auto sv = fmt::string_view(fs.data);
   EXPECT_EQ(sv, "foo");
 }
 #endif  // FMT_USE_CONSTEVAL
-
-TEST(buffer_test, noncopyable) {
-  EXPECT_FALSE(std::is_copy_constructible<fmt::detail::buffer<char>>::value);
-  EXPECT_FALSE(std::is_copy_assignable<fmt::detail::buffer<char>>::value);
-}
-
-TEST(buffer_test, nonmoveable) {
-  EXPECT_FALSE(std::is_move_constructible<fmt::detail::buffer<char>>::value);
-  EXPECT_FALSE(std::is_move_assignable<fmt::detail::buffer<char>>::value);
-}
-
-TEST(buffer_test, indestructible) {
-  static_assert(!std::is_destructible<fmt::detail::buffer<int>>(),
-                "buffer's destructor is protected");
-}
-
-template <typename T> struct mock_buffer final : fmt::detail::buffer<T> {
-  MOCK_METHOD(size_t, do_grow, (size_t));
-
-  static void grow(fmt::detail::buffer<T>& buf, size_t capacity) {
-    auto& self = static_cast<mock_buffer&>(buf);
-    self.set(buf.data(), self.do_grow(capacity));
-  }
-
-  mock_buffer(T* data = nullptr, size_t buf_capacity = 0)
-      : fmt::detail::buffer<T>(grow) {
-    this->set(data, buf_capacity);
-    ON_CALL(*this, do_grow(_)).WillByDefault(Invoke([](size_t capacity) {
-      return capacity;
-    }));
-  }
-};
-
-TEST(buffer_test, ctor) {
-  {
-    mock_buffer<int> buffer;
-    EXPECT_EQ(buffer.data(), nullptr);
-    EXPECT_EQ(buffer.size(), 0u);
-    EXPECT_EQ(buffer.capacity(), 0u);
-  }
-  {
-    int data;
-    mock_buffer<int> buffer(&data);
-    EXPECT_EQ(&buffer[0], &data);
-    EXPECT_EQ(buffer.size(), 0u);
-    EXPECT_EQ(buffer.capacity(), 0u);
-  }
-  {
-    int data;
-    size_t capacity = std::numeric_limits<size_t>::max();
-    mock_buffer<int> buffer(&data, capacity);
-    EXPECT_EQ(&buffer[0], &data);
-    EXPECT_EQ(buffer.size(), 0u);
-    EXPECT_EQ(buffer.capacity(), capacity);
-  }
-}
-
-TEST(buffer_test, access) {
-  char data[10];
-  mock_buffer<char> buffer(data, sizeof(data));
-  buffer[0] = 11;
-  EXPECT_EQ(buffer[0], 11);
-  buffer[3] = 42;
-  EXPECT_EQ(*(&buffer[0] + 3), 42);
-  const fmt::detail::buffer<char>& const_buffer = buffer;
-  EXPECT_EQ(const_buffer[3], 42);
-}
-
-TEST(buffer_test, try_resize) {
-  char data[123];
-  mock_buffer<char> buffer(data, sizeof(data));
-  buffer[10] = 42;
-  EXPECT_EQ(buffer[10], 42);
-  buffer.try_resize(20);
-  EXPECT_EQ(buffer.size(), 20u);
-  EXPECT_EQ(buffer.capacity(), 123u);
-  EXPECT_EQ(buffer[10], 42);
-  buffer.try_resize(5);
-  EXPECT_EQ(buffer.size(), 5u);
-  EXPECT_EQ(buffer.capacity(), 123u);
-  EXPECT_EQ(buffer[10], 42);
-  // Check if try_resize calls grow.
-  EXPECT_CALL(buffer, do_grow(124));
-  buffer.try_resize(124);
-  EXPECT_CALL(buffer, do_grow(200));
-  buffer.try_resize(200);
-}
-
-TEST(buffer_test, try_resize_partial) {
-  char data[10];
-  mock_buffer<char> buffer(data, sizeof(data));
-  EXPECT_CALL(buffer, do_grow(20)).WillOnce(Return(15));
-  buffer.try_resize(20);
-  EXPECT_EQ(buffer.capacity(), 15);
-  EXPECT_EQ(buffer.size(), 15);
-}
-
-TEST(buffer_test, clear) {
-  mock_buffer<char> buffer;
-  EXPECT_CALL(buffer, do_grow(20));
-  buffer.try_resize(20);
-  buffer.try_resize(0);
-  EXPECT_EQ(buffer.size(), 0u);
-  EXPECT_EQ(buffer.capacity(), 20u);
-}
-
-TEST(buffer_test, append) {
-  char data[15];
-  mock_buffer<char> buffer(data, 10);
-  auto test = "test";
-  buffer.append(test, test + 5);
-  EXPECT_STREQ(&buffer[0], test);
-  EXPECT_EQ(buffer.size(), 5u);
-  buffer.try_resize(10);
-  EXPECT_CALL(buffer, do_grow(12));
-  buffer.append(test, test + 2);
-  EXPECT_EQ(buffer[10], 't');
-  EXPECT_EQ(buffer[11], 'e');
-  EXPECT_EQ(buffer.size(), 12u);
-}
-
-TEST(buffer_test, append_partial) {
-  char data[10];
-  mock_buffer<char> buffer(data, sizeof(data));
-  testing::InSequence seq;
-  EXPECT_CALL(buffer, do_grow(15)).WillOnce(Return(10));
-  EXPECT_CALL(buffer, do_grow(15)).WillOnce(Invoke([&buffer](size_t) {
-    EXPECT_EQ(fmt::string_view(buffer.data(), buffer.size()), "0123456789");
-    buffer.clear();
-    return 10;
-  }));
-  auto test = "0123456789abcde";
-  buffer.append(test, test + 15);
-}
-
-TEST(buffer_test, append_allocates_enough_storage) {
-  char data[19];
-  mock_buffer<char> buffer(data, 10);
-  auto test = "abcdefgh";
-  buffer.try_resize(10);
-  EXPECT_CALL(buffer, do_grow(19));
-  buffer.append(test, test + 9);
-}
 
 TEST(base_test, is_locking) {
   EXPECT_FALSE(fmt::detail::is_locking<const char(&)[3]>());
@@ -279,6 +132,156 @@ TEST(base_test, is_back_insert_iterator) {
                std::front_insert_iterator<std::string>>::value);
 }
 
+#if !FMT_GCC_VERSION || FMT_GCC_VERSION >= 470
+TEST(buffer_test, noncopyable) {
+  EXPECT_FALSE(std::is_copy_constructible<buffer<char>>::value);
+#  if !FMT_MSC_VERSION
+  // std::is_copy_assignable is broken in MSVC2013.
+  EXPECT_FALSE(std::is_copy_assignable<buffer<char>>::value);
+#  endif
+}
+
+TEST(buffer_test, nonmoveable) {
+  EXPECT_FALSE(std::is_move_constructible<buffer<char>>::value);
+#  if !FMT_MSC_VERSION
+  // std::is_move_assignable is broken in MSVC2013.
+  EXPECT_FALSE(std::is_move_assignable<buffer<char>>::value);
+#  endif
+}
+#endif
+
+TEST(buffer_test, indestructible) {
+  static_assert(!std::is_destructible<fmt::detail::buffer<int>>(),
+                "buffer's destructor is protected");
+}
+
+template <typename T> struct mock_buffer final : buffer<T> {
+  MOCK_METHOD(size_t, do_grow, (size_t));
+
+  static void grow(buffer<T>& buf, size_t capacity) {
+    auto& self = static_cast<mock_buffer&>(buf);
+    self.set(buf.data(), self.do_grow(capacity));
+  }
+
+  mock_buffer(T* data = nullptr, size_t buf_capacity = 0) : buffer<T>(grow) {
+    this->set(data, buf_capacity);
+    ON_CALL(*this, do_grow(_)).WillByDefault(Invoke([](size_t capacity) {
+      return capacity;
+    }));
+  }
+};
+
+TEST(buffer_test, ctor) {
+  {
+    mock_buffer<int> buffer;
+    EXPECT_EQ(nullptr, buffer.data());
+    EXPECT_EQ(static_cast<size_t>(0), buffer.size());
+    EXPECT_EQ(static_cast<size_t>(0), buffer.capacity());
+  }
+  {
+    int dummy;
+    mock_buffer<int> buffer(&dummy);
+    EXPECT_EQ(&dummy, &buffer[0]);
+    EXPECT_EQ(static_cast<size_t>(0), buffer.size());
+    EXPECT_EQ(static_cast<size_t>(0), buffer.capacity());
+  }
+  {
+    int dummy;
+    size_t capacity = std::numeric_limits<size_t>::max();
+    mock_buffer<int> buffer(&dummy, capacity);
+    EXPECT_EQ(&dummy, &buffer[0]);
+    EXPECT_EQ(static_cast<size_t>(0), buffer.size());
+    EXPECT_EQ(capacity, buffer.capacity());
+  }
+}
+
+TEST(buffer_test, access) {
+  char data[10];
+  mock_buffer<char> buffer(data, sizeof(data));
+  buffer[0] = 11;
+  EXPECT_EQ(11, buffer[0]);
+  buffer[3] = 42;
+  EXPECT_EQ(42, *(&buffer[0] + 3));
+  const fmt::detail::buffer<char>& const_buffer = buffer;
+  EXPECT_EQ(42, const_buffer[3]);
+}
+
+TEST(buffer_test, try_resize) {
+  char data[123];
+  mock_buffer<char> buffer(data, sizeof(data));
+  buffer[10] = 42;
+  EXPECT_EQ(42, buffer[10]);
+  buffer.try_resize(20);
+  EXPECT_EQ(20u, buffer.size());
+  EXPECT_EQ(123u, buffer.capacity());
+  EXPECT_EQ(42, buffer[10]);
+  buffer.try_resize(5);
+  EXPECT_EQ(5u, buffer.size());
+  EXPECT_EQ(123u, buffer.capacity());
+  EXPECT_EQ(42, buffer[10]);
+  // Check if try_resize calls grow.
+  EXPECT_CALL(buffer, do_grow(124));
+  buffer.try_resize(124);
+  EXPECT_CALL(buffer, do_grow(200));
+  buffer.try_resize(200);
+}
+
+TEST(buffer_test, try_resize_partial) {
+  char data[10];
+  mock_buffer<char> buffer(data, sizeof(data));
+  EXPECT_CALL(buffer, do_grow(20)).WillOnce(Return(15));
+  buffer.try_resize(20);
+  EXPECT_EQ(buffer.capacity(), 15);
+  EXPECT_EQ(buffer.size(), 15);
+}
+
+TEST(buffer_test, clear) {
+  mock_buffer<char> buffer;
+  EXPECT_CALL(buffer, do_grow(20));
+  buffer.try_resize(20);
+  buffer.try_resize(0);
+  EXPECT_EQ(static_cast<size_t>(0), buffer.size());
+  EXPECT_EQ(20u, buffer.capacity());
+}
+
+TEST(buffer_test, append) {
+  char data[15];
+  mock_buffer<char> buffer(data, 10);
+  auto test = "test";
+  buffer.append(test, test + 5);
+  EXPECT_STREQ(test, &buffer[0]);
+  EXPECT_EQ(5u, buffer.size());
+  buffer.try_resize(10);
+  EXPECT_CALL(buffer, do_grow(12));
+  buffer.append(test, test + 2);
+  EXPECT_EQ('t', buffer[10]);
+  EXPECT_EQ('e', buffer[11]);
+  EXPECT_EQ(12u, buffer.size());
+}
+
+TEST(buffer_test, append_partial) {
+  char data[10];
+  mock_buffer<char> buffer(data, sizeof(data));
+  testing::InSequence seq;
+  EXPECT_CALL(buffer, do_grow(15)).WillOnce(Return(10));
+  EXPECT_CALL(buffer, do_grow(15)).WillOnce(Invoke([&buffer](size_t) {
+    EXPECT_EQ(fmt::string_view(buffer.data(), buffer.size()), "0123456789");
+    buffer.clear();
+    return 10;
+  }));
+  auto test = "0123456789abcde";
+  buffer.append(test, test + 15);
+}
+
+TEST(buffer_test, append_allocates_enough_storage) {
+  char data[19];
+  mock_buffer<char> buffer(data, 10);
+  auto test = "abcdefgh";
+  buffer.try_resize(10);
+  EXPECT_CALL(buffer, do_grow(19));
+  buffer.append(test, test + 9);
+}
+
 TEST(base_test, get_buffer) {
   mock_buffer<char> buffer;
   void* buffer_ptr = &buffer;
@@ -302,6 +305,11 @@ template <typename Char> struct formatter<test_struct, Char> {
   }
 };
 FMT_END_NAMESPACE
+
+TEST(arg_test, format_args) {
+  auto args = fmt::format_args();
+  EXPECT_FALSE(args.get(1));
+}
 
 // Use a unique result type to make sure that there are no undesirable
 // conversions.
@@ -368,9 +376,33 @@ VISIT_TYPE(unsigned long, unsigned long long);
     CHECK_ARG(expected, value)                              \
   }
 
-TEST(arg_test, format_args) {
-  auto args = fmt::format_args();
-  EXPECT_FALSE(args.get(1));
+template <typename T> class numeric_arg_test : public testing::Test {};
+
+#if FMT_BUILTIN_TYPES
+using test_types =
+    testing::Types<bool, signed char, unsigned char, short, unsigned short, int,
+                   unsigned, long, unsigned long, long long, unsigned long long,
+                   float, double, long double>;
+#else
+using test_types = testing::Types<int>;
+#endif
+TYPED_TEST_SUITE(numeric_arg_test, test_types);
+
+template <typename T, fmt::enable_if_t<std::is_integral<T>::value, int> = 0>
+auto test_value() -> T {
+  return static_cast<T>(42);
+}
+
+template <typename T,
+          fmt::enable_if_t<std::is_floating_point<T>::value, int> = 0>
+auto test_value() -> T {
+  return static_cast<T>(4.2);
+}
+
+TYPED_TEST(numeric_arg_test, make_and_visit) {
+  CHECK_ARG_SIMPLE(test_value<TypeParam>());
+  CHECK_ARG_SIMPLE(std::numeric_limits<TypeParam>::min());
+  CHECK_ARG_SIMPLE(std::numeric_limits<TypeParam>::max());
 }
 
 TEST(arg_test, char_arg) { CHECK_ARG('a', 'a'); }
@@ -412,7 +444,7 @@ struct check_custom {
     auto parse_ctx = fmt::format_parse_context("");
     auto ctx = fmt::format_context(fmt::appender(buffer), fmt::format_args());
     h.format(parse_ctx, ctx);
-    EXPECT_EQ(std::string(buffer.data, buffer.size()), "test");
+    EXPECT_EQ("test", std::string(buffer.data, buffer.size()));
     return test_result();
   }
 };
@@ -432,57 +464,27 @@ TEST(arg_test, visit_invalid_arg) {
   fmt::basic_format_arg<fmt::format_context>().visit(visitor);
 }
 
-template <typename T> class numeric_arg_test : public testing::Test {};
-
-#if FMT_BUILTIN_TYPES
-using test_types =
-    testing::Types<bool, signed char, unsigned char, short, unsigned short, int,
-                   unsigned, long, unsigned long, long long, unsigned long long,
-                   float, double, long double>;
-#else
-using test_types = testing::Types<int>;
-#endif
-TYPED_TEST_SUITE(numeric_arg_test, test_types);
-
-template <typename T, fmt::enable_if_t<std::is_integral<T>::value, int> = 0>
-auto test_value() -> T {
-  return static_cast<T>(42);
-}
-
-template <typename T,
-          fmt::enable_if_t<std::is_floating_point<T>::value, int> = 0>
-auto test_value() -> T {
-  return static_cast<T>(4.2);
-}
-
-TYPED_TEST(numeric_arg_test, make_and_visit) {
-  CHECK_ARG_SIMPLE(test_value<TypeParam>());
-  CHECK_ARG_SIMPLE(std::numeric_limits<TypeParam>::min());
-  CHECK_ARG_SIMPLE(std::numeric_limits<TypeParam>::max());
-}
-
 #if FMT_USE_CONSTEXPR
 
 enum class arg_id_result { none, index, name };
-
 struct test_arg_id_handler {
   arg_id_result res = arg_id_result::none;
   int index = 0;
-  fmt::string_view name;
+  string_view name;
 
   constexpr void on_index(int i) {
     res = arg_id_result::index;
     index = i;
   }
 
-  constexpr void on_name(fmt::string_view n) {
+  constexpr void on_name(string_view n) {
     res = arg_id_result::name;
     name = n;
   }
 };
 
 template <size_t N>
-constexpr auto parse_arg_id(const char (&s)[N]) -> test_arg_id_handler {
+constexpr test_arg_id_handler parse_arg_id(const char (&s)[N]) {
   auto h = test_arg_id_handler();
   fmt::detail::parse_arg_id(s, s + N, h);
   return h;
@@ -540,7 +542,7 @@ struct test_format_string_handler {
   bool error = false;
 };
 
-template <size_t N> constexpr auto parse_string(const char (&s)[N]) -> bool {
+template <size_t N> constexpr bool parse_string(const char (&s)[N]) {
   auto h = test_format_string_handler();
   fmt::detail::parse_format_string(fmt::string_view(s, N - 1), h);
   return !h.error;
@@ -554,7 +556,6 @@ TEST(base_test, constexpr_parse_format_string) {
   static_assert(parse_string("{foo}"), "");
   static_assert(parse_string("{:}"), "");
 }
-
 #endif  // FMT_USE_CONSTEXPR
 
 struct enabled_formatter {};
@@ -699,46 +700,46 @@ TEST(base_test, format_to) {
 TEST(base_test, format_to_array) {
   char buffer[4];
   auto result = fmt::format_to(buffer, "{}", 12345);
-  EXPECT_EQ(std::distance(&buffer[0], result.out), 4);
+  EXPECT_EQ(4, std::distance(&buffer[0], result.out));
   EXPECT_TRUE(result.truncated);
-  EXPECT_EQ(result.out, buffer + 4);
-  EXPECT_EQ(fmt::string_view(buffer, 4), "1234");
+  EXPECT_EQ(buffer + 4, result.out);
+  EXPECT_EQ("1234", fmt::string_view(buffer, 4));
 
   char* out = nullptr;
   EXPECT_THROW(out = result, std::runtime_error);
   (void)out;
 
   result = fmt::format_to(buffer, "{:s}", "foobar");
-  EXPECT_EQ(std::distance(&buffer[0], result.out), 4);
+  EXPECT_EQ(4, std::distance(&buffer[0], result.out));
   EXPECT_TRUE(result.truncated);
-  EXPECT_EQ(result.out, buffer + 4);
-  EXPECT_EQ(fmt::string_view(buffer, 4), "foob");
+  EXPECT_EQ(buffer + 4, result.out);
+  EXPECT_EQ("foob", fmt::string_view(buffer, 4));
 
   buffer[0] = 'x';
   buffer[1] = 'x';
   buffer[2] = 'x';
   buffer[3] = 'x';
   result = fmt::format_to(buffer, "{}", 'A');
-  EXPECT_EQ(std::distance(&buffer[0], result.out), 1);
+  EXPECT_EQ(1, std::distance(&buffer[0], result.out));
   EXPECT_FALSE(result.truncated);
-  EXPECT_EQ(result.out, buffer + 1);
-  EXPECT_EQ(fmt::string_view(buffer, 4), "Axxx");
+  EXPECT_EQ(buffer + 1, result.out);
+  EXPECT_EQ("Axxx", fmt::string_view(buffer, 4));
 
   result = fmt::format_to(buffer, "{}{} ", 'B', 'C');
-  EXPECT_EQ(std::distance(&buffer[0], result.out), 3);
+  EXPECT_EQ(3, std::distance(&buffer[0], result.out));
   EXPECT_FALSE(result.truncated);
-  EXPECT_EQ(result.out, buffer + 3);
-  EXPECT_EQ(fmt::string_view(buffer, 4), "BC x");
+  EXPECT_EQ(buffer + 3, result.out);
+  EXPECT_EQ("BC x", fmt::string_view(buffer, 4));
 
   result = fmt::format_to(buffer, "{}", "ABCDE");
-  EXPECT_EQ(std::distance(&buffer[0], result.out), 4);
+  EXPECT_EQ(4, std::distance(&buffer[0], result.out));
   EXPECT_TRUE(result.truncated);
-  EXPECT_EQ(fmt::string_view(buffer, 4), "ABCD");
+  EXPECT_EQ("ABCD", fmt::string_view(buffer, 4));
 
   result = fmt::format_to(buffer, "{}", std::string(1000, '*').c_str());
-  EXPECT_EQ(std::distance(&buffer[0], result.out), 4);
+  EXPECT_EQ(4, std::distance(&buffer[0], result.out));
   EXPECT_TRUE(result.truncated);
-  EXPECT_EQ(fmt::string_view(buffer, 4), "****");
+  EXPECT_EQ("****", fmt::string_view(buffer, 4));
 }
 
 // Test that check is not found by ADL.
@@ -805,7 +806,7 @@ TEST(base_test, format_nonconst) {
 }
 
 TEST(base_test, throw_in_buffer_dtor) {
-  constexpr int buffer_size = 256;
+  enum { buffer_size = 256 };
 
   struct throwing_iterator {
     int& count;
@@ -827,7 +828,7 @@ TEST(base_test, throw_in_buffer_dtor) {
   }
 }
 
-struct convertible_to_any_type_with_member_x {
+struct its_a_trap {
   template <typename T> operator T() const {
     auto v = T();
     v.x = 42;
@@ -836,12 +837,12 @@ struct convertible_to_any_type_with_member_x {
 };
 
 FMT_BEGIN_NAMESPACE
-template <> struct formatter<convertible_to_any_type_with_member_x> {
+template <> struct formatter<its_a_trap> {
   FMT_CONSTEXPR auto parse(format_parse_context& ctx) -> decltype(ctx.begin()) {
     return ctx.begin();
   }
 
-  auto format(convertible_to_any_type_with_member_x, format_context& ctx) const
+  auto format(its_a_trap, format_context& ctx) const
       -> decltype(ctx.out()) const {
     auto out = ctx.out();
     *out++ = 'x';
@@ -850,10 +851,9 @@ template <> struct formatter<convertible_to_any_type_with_member_x> {
 };
 FMT_END_NAMESPACE
 
-TEST(base_test, promiscuous_conversions) {
+TEST(base_test, trappy_conversion) {
   auto s = std::string();
-  fmt::format_to(std::back_inserter(s), "{}",
-                 convertible_to_any_type_with_member_x());
+  fmt::format_to(std::back_inserter(s), "{}", its_a_trap());
   EXPECT_EQ(s, "x");
 }
 
@@ -878,23 +878,25 @@ TEST(base_test, format_to_custom_container) {
   fmt::format_to(std::back_inserter(c), "");
 }
 
-TEST(base_test, no_repeated_format_string_conversions) {
-  struct nondeterministic_format_string {
-    mutable int i = 0;
-    FMT_CONSTEXPR operator fmt::string_view() const {
-      return {"{}", i++ != 0 ? 2u : 0u};
-    }
-  };
+struct nondeterministic_format_string {
+  mutable int i = 0;
+  FMT_CONSTEXPR operator string_view() const {
+    return string_view("{}", i++ != 0 ? 2 : 0);
+  }
+};
 
-#if !FMT_GCC_VERSION || FMT_GCC_VERSION >= 1200
+TEST(base_test, no_repeated_format_string_conversions) {
+#if !FMT_GCC_VERSION
   char buf[10];
   fmt::format_to(buf, nondeterministic_format_string());
 #endif
 }
 
 TEST(base_test, format_context_accessors) {
-  auto copy = [](fmt::appender app, const fmt::format_context& ctx) {
-    return fmt::format_context(app, ctx.args(), ctx.locale());
+  class copier {
+    static fmt::format_context copy(fmt::appender app,
+                                    const fmt::format_context& ctx) {
+      return fmt::format_context(std::move(app), ctx.args(), ctx.locale());
+    }
   };
-  fmt::detail::ignore_unused(copy);
 }
